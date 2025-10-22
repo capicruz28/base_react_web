@@ -1,6 +1,16 @@
 // src/context/AuthContext.tsx
-import React, { createContext, useContext, useEffect, useMemo, useState, useRef, ReactNode } from 'react';
+import React, { 
+  createContext, 
+  useContext, 
+  useEffect, 
+  useMemo, 
+  useState, 
+  useRef, 
+  ReactNode,
+  useCallback,
+} from 'react';
 import api from '../services/api';
+import { authService } from '../services/auth.service';
 import type {
   AxiosResponse,
   AxiosError,
@@ -9,7 +19,14 @@ import type {
 } from 'axios';
 import type { AuthResponse, UserData } from '../types/auth.types';
 
-type AuthState = { user: UserData | null; token: string | null };
+// ============================================================================
+// TIPOS
+// ============================================================================
+
+type AuthState = { 
+  user: UserData | null; 
+  token: string | null;
+};
 
 interface AuthContextType {
   auth: AuthState;
@@ -19,6 +36,10 @@ interface AuthContextType {
   loading: boolean;
   hasRole: (...roles: string[]) => boolean;
 }
+
+// ============================================================================
+// CONSTANTES
+// ============================================================================
 
 const initialAuth: AuthState = { user: null, token: null };
 
@@ -31,92 +52,173 @@ const AuthContext = createContext<AuthContextType>({
   hasRole: () => false,
 });
 
+// ============================================================================
+// PROVIDER
+// ============================================================================
+
 export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [auth, setAuth] = useState<AuthState>(initialAuth);
   const [loading, setLoading] = useState(true);
   
-  // ✅ Refs para acceder siempre al estado más reciente
+  // Refs para acceder al estado más reciente en los interceptores
   const authRef = useRef(auth);
   const isRefreshingRef = useRef(false);
+  
+  // ✅ CORREGIDO: Tipo correcto para la cola
+  const failedQueueRef = useRef<Array<{
+    resolve: (value: string) => void; // ✅ CORREGIDO: Eliminar "undefined"
+    reject: (reason?: Error) => void;
+  }>>([]);
 
-  // ✅ Mantener authRef actualizado
+  // Mantener authRef sincronizado con auth
   useEffect(() => {
     authRef.current = auth;
   }, [auth]);
 
-  // Helper: detecta si la URL es auth/refresh o auth/login
-  const isAuthRefreshOrLogin = (url?: string) => {
-    if (!url) return false;
-    try {
-      const clean = url.toLowerCase();
-      return clean.includes('/auth/refresh') || clean.includes('/auth/login');
-    } catch {
-      return false;
-    }
-  };
+  // ============================================================================
+  // HELPERS
+  // ============================================================================
 
-  // ✅ INTERCEPTOR DE REQUEST - Agregar token
-  useEffect(() => {
-    const reqId = api.interceptors.request.use((config: InternalAxiosRequestConfig) => {
-      const headers = (config.headers ?? {}) as AxiosRequestHeaders;
-      
-      // ✅ Usar authRef.current para obtener el token más reciente
-      const currentToken = authRef.current.token;
-      
-      if (currentToken && !isAuthRefreshOrLogin(config.url)) {
-        headers.Authorization = `Bearer ${currentToken}`;
+  /**
+   * Detecta si la URL es de autenticación (login/refresh)
+   * Estas URLs no deben incluir el token en el header
+   */
+  const isAuthEndpoint = useCallback((url?: string): boolean => {
+    if (!url) return false;
+    const cleanUrl = url.toLowerCase();
+    return cleanUrl.includes('/auth/refresh') || 
+           cleanUrl.includes('/auth/login');
+  }, []);
+
+  /**
+   * Procesa la cola de peticiones fallidas después de un refresh exitoso
+   */
+  const processQueue = useCallback((error: Error | null = null, token: string | null = null) => {
+    failedQueueRef.current.forEach(promise => {
+      if (error) {
+        promise.reject(error);
+      } else if (token) {
+        promise.resolve(token); // ✅ CORREGIDO: Siempre pasar string, no undefined
       }
-      
-      config.headers = headers;
-      return config;
     });
+    failedQueueRef.current = [];
+  }, []);
+
+  /**
+   * Realiza el logout (local y servidor)
+   */
+  const doLogout = useCallback(async (callServer = true) => {
+    try {
+      if (callServer) {
+        await authService.logout();
+      }
+    } catch (error) {
+      const axiosError = error as AxiosError;
+      console.error('Logout error:', axiosError.message);
+    } finally {
+      setAuth(initialAuth);
+      authRef.current = initialAuth;
+      processQueue(new Error('Session expired'), null);
+    }
+  }, [processQueue]);
+
+  // ============================================================================
+  // INTERCEPTORES
+  // ============================================================================
+
+  /**
+   * ✅ INTERCEPTOR DE REQUEST
+   * Agrega el token de autorización a todas las peticiones (excepto login/refresh)
+   */
+  useEffect(() => {
+    const requestInterceptor = api.interceptors.request.use(
+      (config: InternalAxiosRequestConfig) => {
+        const headers = (config.headers ?? {}) as AxiosRequestHeaders;
+        const currentToken = authRef.current.token;
+        
+        // Solo agregar token si existe y no es endpoint de auth
+        if (currentToken && !isAuthEndpoint(config.url)) {
+          headers.Authorization = `Bearer ${currentToken}`;
+        }
+        
+        config.headers = headers;
+        return config;
+      },
+      (error: AxiosError) => {
+        console.error('Request interceptor error:', error.message);
+        return Promise.reject(error);
+      }
+    );
 
     return () => {
-      api.interceptors.request.eject(reqId);
+      api.interceptors.request.eject(requestInterceptor);
     };
-  }, []); // ✅ Solo se registra UNA VEZ
+  }, [isAuthEndpoint]);
 
-  // ✅ INTERCEPTOR DE RESPONSE - Manejar 401 y refresh
+  /**
+   * ✅ INTERCEPTOR DE RESPONSE
+   * Maneja errores 401 y realiza refresh automático del token
+   */
   useEffect(() => {
-    const resId = api.interceptors.response.use(
-      (res: AxiosResponse) => res,
+    const responseInterceptor = api.interceptors.response.use(
+      (response: AxiosResponse) => response,
       async (error: AxiosError) => {
-        const original = error.config as (InternalAxiosRequestConfig & { _retry?: boolean }) | undefined;
-        const status = error.response?.status;
-
-        // ✅ Si no hay config o es auth/refresh/login, rechazar
-        if (!original || isAuthRefreshOrLogin(original.url)) {
+        const originalRequest = error.config as (InternalAxiosRequestConfig & { 
+          _retry?: boolean 
+        }) | undefined;
+        
+        // Si no hay config o es endpoint de auth, rechazar directamente
+        if (!originalRequest || isAuthEndpoint(originalRequest.url)) {
           return Promise.reject(error);
         }
 
-        // ✅ Si es 401 y no se ha reintentado
-        if (status === 401 && !original._retry) {
-          // ✅ Evitar múltiples refresh simultáneos
+        // Si es 401 y no se ha reintentado
+        if (error.response?.status === 401 && !originalRequest._retry) {
+          // Si ya se está refrescando, agregar a la cola
           if (isRefreshingRef.current) {
-            return Promise.reject(error);
+            return new Promise<string>((resolve, reject) => {
+              failedQueueRef.current.push({ resolve, reject });
+            })
+              .then(token => {
+                const headers = (originalRequest.headers ?? {}) as AxiosRequestHeaders;
+                headers.Authorization = `Bearer ${token}`;
+                originalRequest.headers = headers;
+                return api(originalRequest);
+              })
+              .catch(err => {
+                console.error('Failed queue error:', err);
+                return Promise.reject(err);
+              });
           }
 
-          original._retry = true;
+          originalRequest._retry = true;
           isRefreshingRef.current = true;
 
           try {
-            // ✅ Intentar refresh con barra final
-            const { data } = await api.post('/auth/refresh/');
-            const newToken: string = (data as any).access_token;
+            // ✅ Intentar refresh del token
+            console.log('🔄 Access token expirado, refrescando...');
+            const newToken = await authService.refreshToken();
+            console.log('✅ Token refrescado exitosamente');
 
-            // ✅ Actualizar estado Y ref inmediatamente
-            setAuth((prev) => ({ ...prev, token: newToken }));
-            authRef.current = { ...authRef.current, token: newToken };
+            // Actualizar estado y ref
+            const newAuth = { ...authRef.current, token: newToken };
+            setAuth(newAuth);
+            authRef.current = newAuth;
 
-            // ✅ Reintentar petición original con nuevo token
-            const headers = (original.headers ?? {}) as AxiosRequestHeaders;
+            // Procesar cola de peticiones pendientes
+            processQueue(null, newToken);
+
+            // Reintentar petición original con nuevo token
+            const headers = (originalRequest.headers ?? {}) as AxiosRequestHeaders;
             headers.Authorization = `Bearer ${newToken}`;
-            original.headers = headers;
+            originalRequest.headers = headers;
 
-            return api(original);
+            return api(originalRequest);
           } catch (refreshError) {
             // ✅ Si falla el refresh, hacer logout
-            console.error('Token refresh failed:', refreshError);
+            const axiosError = refreshError as AxiosError;
+            console.error('❌ Token refresh failed, logging out:', axiosError.message);
+            processQueue(new Error('Token refresh failed'), null);
             await doLogout(false);
             return Promise.reject(refreshError);
           } finally {
@@ -129,35 +231,45 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     );
 
     return () => {
-      api.interceptors.response.eject(resId);
+      api.interceptors.response.eject(responseInterceptor);
     };
-  }, []); // ✅ Solo se registra UNA VEZ
+  }, [isAuthEndpoint, processQueue, doLogout]);
 
-  // ✅ BOOTSTRAP - Verificar sesión al cargar
+  // ============================================================================
+  // BOOTSTRAP - Verificar sesión al cargar la aplicación
+  // ============================================================================
+
   useEffect(() => {
     let cancelled = false;
     
-    (async () => {
+    const initializeAuth = async () => {
       try {
-        // ✅ Intentar refresh con barra final
-        const { data: refresh } = await api.post('/auth/refresh/');
-        const newToken: string = (refresh as any).access_token;
+        console.log('🔍 Verificando sesión existente...');
+        // Intentar refresh para verificar si hay sesión activa
+        const newToken = await authService.refreshToken();
 
         if (cancelled) return;
         
-        // ✅ Obtener datos del usuario
+        console.log('✅ Sesión activa encontrada, obteniendo datos del usuario...');
+        // Obtener datos del usuario desde /auth/me/
         const meResp = await api.get<UserData>('/auth/me/', {
           headers: { Authorization: `Bearer ${newToken}` },
         });
 
         if (cancelled) return;
         
-        // ✅ Actualizar estado Y ref
-        const newAuth = { token: newToken, user: meResp.data };
-        setAuth(newAuth);
-        authRef.current = newAuth;
+        if (meResp.data) {
+          const newAuth = { token: newToken, user: meResp.data };
+          setAuth(newAuth);
+          authRef.current = newAuth;
+          console.log('✅ Usuario autenticado:', meResp.data.nombre_usuario);
+        } else {
+          setAuth(initialAuth);
+          authRef.current = initialAuth;
+        }
       } catch (error) {
-        console.log('Bootstrap failed (no session found):', error);
+        const axiosError = error as AxiosError;
+        console.log('ℹ️ No hay sesión activa:', axiosError.message);
         if (!cancelled) {
           setAuth(initialAuth);
           authRef.current = initialAuth;
@@ -167,44 +279,71 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
           setLoading(false);
         }
       }
-    })();
+    };
+
+    initializeAuth();
     
     return () => {
       cancelled = true;
     };
   }, []);
 
-  const setAuthFromLogin = (response: AuthResponse): UserData | null => {
+  // ============================================================================
+  // FUNCIONES PÚBLICAS
+  // ============================================================================
+
+  /**
+   * Establece la autenticación después del login
+   */
+  const setAuthFromLogin = useCallback((response: AuthResponse): UserData | null => {
     if (!response?.access_token || !response?.user_data) {
+      console.error('❌ Respuesta de login inválida');
       setAuth(initialAuth);
       authRef.current = initialAuth;
       return null;
     }
+    
     const newAuth = { token: response.access_token, user: response.user_data };
     setAuth(newAuth);
-    authRef.current = newAuth; // ✅ Actualizar ref también
+    authRef.current = newAuth;
+    console.log('✅ Login exitoso:', response.user_data.nombre_usuario);
     return response.user_data;
-  };
+  }, []);
 
-  const doLogout = async (callServer = true) => {
-    try {
-      if (callServer) await api.post('/auth/logout/');
-    } catch {
-      // ignorar
-    } finally {
-      setAuth(initialAuth);
-      authRef.current = initialAuth; // ✅ Limpiar ref también
-    }
-  };
+  /**
+   * Cierra la sesión del usuario
+   */
+  const logout = useCallback(async () => {
+    console.log('🚪 Cerrando sesión...');
+    await doLogout(true);
+    console.log('✅ Sesión cerrada');
+  }, [doLogout]);
 
-  const logout = async () => doLogout(true);
+  /**
+   * Verifica si el usuario tiene alguno de los roles especificados
+   */
+  const hasRole = useCallback((...roles: string[]): boolean => {
+    if (!authRef.current.user?.roles?.length) return false;
+    
+    const userRoles = new Set(authRef.current.user.roles.map(r => r.toLowerCase()));
+    
+    // Sinónimos de roles (admin = administrador)
+    const getRoleSynonyms = (role: string): string[] => {
+      const normalized = role.toLowerCase();
+      if (normalized === 'admin' || normalized === 'administrador') {
+        return ['admin', 'administrador'];
+      }
+      return [normalized];
+    };
+    
+    return roles.some(role => 
+      getRoleSynonyms(role).some(synonym => userRoles.has(synonym))
+    );
+  }, []);
 
-  const hasRole = (...roles: string[]) => {
-    if (!auth.user?.roles?.length) return false;
-    const userLower = new Set(auth.user.roles.map((r) => r.toLowerCase()));
-    const synonym = (r: string) => (r.toLowerCase() === 'admin' ? ['admin', 'administrador'] : [r.toLowerCase()]);
-    return roles.some((r) => synonym(r).some((s) => userLower.has(s)));
-  };
+  // ============================================================================
+  // CONTEXT VALUE
+  // ============================================================================
 
   const value = useMemo<AuthContextType>(
     () => ({
@@ -215,14 +354,20 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       loading,
       hasRole,
     }),
-    [auth, loading]
+    [auth, loading, setAuthFromLogin, logout, hasRole]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 };
 
+// ============================================================================
+// HOOK
+// ============================================================================
+
 export const useAuth = () => {
-  const ctx = useContext(AuthContext);
-  if (!ctx) throw new Error('useAuth must be used within AuthProvider');
-  return ctx;
+  const context = useContext(AuthContext);
+  if (!context) {
+    throw new Error('useAuth must be used within AuthProvider');
+  }
+  return context;
 };

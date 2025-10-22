@@ -1,38 +1,38 @@
-// src/types/auth.types.ts (MODIFICADO)
+// src/types/auth.types.ts
+import { AxiosError } from 'axios';
 
 export interface LoginCredentials {
   username: string;
   password: string;
 }
 
-// --- Interfaz UserData MODIFICADA ---
 export interface UserData {
   usuario_id: number;
-  nombre_usuario: string; // Asumo que este es el 'username' para login
+  nombre_usuario: string;
   correo: string;
   nombre: string;
   apellido: string;
   es_activo: boolean;
-  roles: string[]; // <-- CAMBIO PRINCIPAL: Añadir array de roles
+  roles: string[];
 }
-// ----------------------------------
 
 export interface AuthResponse {
   access_token: string;
   token_type: string;
-  user_data: UserData; // Ahora espera que user_data incluya 'roles'
+  user_data: UserData;
 }
 
 export interface AuthState {
-  user: UserData | null; // El tipo de 'user' ahora incluye 'roles'
+  user: UserData | null;
   token: string | null;
 }
 
-export interface ApiError {
-  message: string;
-  status: number;
-  details?: string;
+// ✅ Interfaz para errores de API
+export interface ApiErrorResponse {
+  detail?: string;
+  message?: string;
+  status?: number;
 }
 
-// (Opcional pero recomendado) Puedes renombrar LoginCredentials a LoginPayload si prefieres
-// export type LoginPayload = LoginCredentials;
+// ✅ Tipo para errores de Axios con respuesta tipada
+export type ApiError = AxiosError<ApiErrorResponse>;

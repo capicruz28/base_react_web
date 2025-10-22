@@ -1,76 +1,96 @@
-// src/services/auth.service.ts (CORREGIDO PARA FORM DATA LOGIN)
+// src/services/auth.service.ts
+import api from './api';
+import { LoginCredentials, AuthResponse, UserData } from '../types/auth.types'; // ✅ CORREGIDO: Eliminar ApiError
+import { AxiosError } from 'axios';
 
-import api from './api'; // Tu instancia configurada de Axios o cliente HTTP
-import Cookies from 'js-cookie'; // Necesitamos js-cookie para leer/borrar el token
-import { LoginCredentials, AuthResponse, UserData } from '../types/auth.types'; // Importa UserData
+/**
+ * Servicio de autenticación
+ * Maneja login, obtención de perfil y logout
+ */
 
-// Función de Login (MODIFICADA)
+/**
+ * Login de usuario
+ * @param credentials - Credenciales de usuario (username, password)
+ * @returns Promise con la respuesta de autenticación
+ */
 const login = async (credentials: LoginCredentials): Promise<AuthResponse> => {
   try {
-    // 1. Crear instancia de URLSearchParams
+    // Crear FormData para enviar como application/x-www-form-urlencoded
     const params = new URLSearchParams();
-
-    // 2. Añadir los campos esperados por el backend (username, password)
-    //    Asegúrate que LoginCredentials tenga 'username' y 'password'
     params.append('username', credentials.username);
     params.append('password', credentials.password);
 
-    // 3. Realizar la solicitud POST con los params como data
-    //    Axios enviará esto como application/x-www-form-urlencoded
-    // ✅ CAMBIO: Agregado / al final
-    const { data } = await api.post<AuthResponse>('/auth/login/', params);
+    // Realizar petición de login
+    const { data } = await api.post<AuthResponse>('/auth/login/', params, {
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'X-Client-Type': 'web',
+      },
+    });
 
-    // 4. La gestión de la cookie/token se hace en AuthContext/componente,
-    //    así que aquí solo devolvemos la respuesta completa.
     return data;
-
-  } catch (error: any) {
-    // Mejor loggear el error específico si está disponible
-    console.error('Login failed:', error.response?.data || error.message || error);
-    throw error; // Re-lanzar para que el componente/context lo maneje
+  } catch (error) {
+    const axiosError = error as AxiosError<{ detail?: string }>;
+    console.error('Login failed:', axiosError.response?.data || axiosError.message);
+    throw error;
   }
 };
 
-// --- FUNCIÓN NUEVA: Obtener Perfil del Usuario Actual ---
-// (Sin cambios respecto a tu versión)
+/**
+ * Obtener perfil del usuario actual
+ * @returns Promise con los datos del usuario o null si no está autenticado
+ */
 const getCurrentUserProfile = async (): Promise<UserData | null> => {
-  const token = Cookies.get('token'); // Lee el token desde la cookie
-  if (!token) {
-    console.log('getCurrentUserProfile: No token found in cookies.');
-    return null; // No hay token, no se puede obtener perfil
-  }
-
   try {
-    console.log('getCurrentUserProfile: Attempting to fetch profile from /usuarios/me/');
-    // Asegúrate que 'api' tenga interceptor para añadir 'Authorization: Bearer <token>'
-    // ✅ CAMBIO: Agregado / al final
-    const response = await api.get<UserData>('/usuarios/me/'); // Ajusta la ruta si es diferente
-
-    console.log('getCurrentUserProfile: Profile fetched successfully:', response.data);
+    const response = await api.get<UserData>('/usuarios/me/');
     return response.data;
-
-  } catch (error: any) {
-    console.error("getCurrentUserProfile: Error fetching user profile:", error.response?.data || error.message);
-    if (error.response?.status === 401 || error.response?.status === 403) {
-       console.warn("getCurrentUserProfile: Token might be invalid or expired. Removing cookie.");
-       Cookies.remove('token');
+  } catch (error) {
+    const axiosError = error as AxiosError;
+    console.error('Error fetching user profile:', axiosError.response?.data || axiosError.message);
+    
+    // Si es 401 o 403, el token es inválido
+    if (axiosError.response?.status === 401 || axiosError.response?.status === 403) {
+      console.warn('Token might be invalid or expired');
     }
+    
     return null;
   }
 };
 
-// --- FUNCIÓN NUEVA: Logout (limpia la cookie) ---
-// (Sin cambios respecto a tu versión)
-const logout = () => {
-    console.log('authService.logout: Removing token cookie.');
-    Cookies.remove('token');
-    // Opcional: Llamar a endpoint de logout del backend
-    // await api.post('/auth/logout/');
+/**
+ * Logout del usuario
+ * Llama al endpoint de logout del backend para invalidar el refresh token
+ */
+const logout = async (): Promise<void> => {
+  try {
+    await api.post('/auth/logout/');
+  } catch (error) {
+    const axiosError = error as AxiosError;
+    console.error('Logout error:', axiosError.response?.data || axiosError.message);
+    // Continuar con el logout local aunque falle el servidor
+  }
 };
 
-// Exportar el objeto del servicio con todas las funciones
+/**
+ * Refresh del access token
+ * Esta función es llamada automáticamente por el interceptor
+ * @returns Promise con el nuevo access token
+ */
+const refreshToken = async (): Promise<string> => {
+  try {
+    const { data } = await api.post<{ access_token: string }>('/auth/refresh/');
+    return data.access_token;
+  } catch (error) {
+    const axiosError = error as AxiosError;
+    console.error('Token refresh failed:', axiosError.response?.data || axiosError.message);
+    throw error;
+  }
+};
+
+// Exportar el servicio de autenticación
 export const authService = {
   login,
   getCurrentUserProfile,
-  logout
+  logout,
+  refreshToken,
 };
