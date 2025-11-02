@@ -259,7 +259,7 @@ const Sidebar: React.FC<SidebarProps> = ({ isCollapsed, toggleSidebar }) => {
         `}>
           {!isCollapsed && (
             <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100">
-              Peruvian Sea Food
+              Fidesoft
             </h1>
           )}
           <button

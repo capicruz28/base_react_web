@@ -132,7 +132,7 @@ const AdminSidebar: React.FC = () => {
       <div className="p-4 flex justify-between items-center border-b border-gray-200 dark:border-gray-700 flex-shrink-0">
         {!isCollapsed && (
           <span className="text-xl font-bold text-gray-900 dark:text-gray-100">
-            Peruvian Sea Food
+            Fidesoft
           </span>
         )}
         <button

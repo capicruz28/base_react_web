@@ -68,4 +68,16 @@ export const administrationNavItems: SidebarMenuItem[] = [
     area_nombre: null,
     orden: 4,
   },
+    {
+    menu_id: 'session_management', // <-- menu_id ahora es string
+    nombre: 'Sesiones Activas',
+    ruta: '/admin/sesiones',
+    icono: 'LogOut',
+    children: [],
+    es_activo: true,
+    padre_menu_id: null,
+    area_id: null,
+    area_nombre: null,
+    orden: 4,
+  },
 ];

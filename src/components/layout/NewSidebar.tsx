@@ -634,7 +634,7 @@ const NewSidebar: React.FC<SidebarProps> = ({ isCollapsed, toggleSidebar }) => {
             `}>
                 {!isCollapsed && (
                     <div className="font-bold text-lg text-gray-900 dark:text-white truncate">
-                        Peruvian Sea Food
+                        Fidesoft
                     </div>
                 )}
                 <button

@@ -90,7 +90,7 @@ const Login: React.FC = () => { // Añadir tipo explícito React.FC
       <div className="max-w-md w-full space-y-8 p-8 bg-white dark:bg-gray-800 shadow-lg rounded-lg"> {/* Añadido padding y fondo */}
         <div className="text-center">
           <img
-            src="/psf.png" // Asegúrate que esta imagen exista en public/
+            src="/fidesof.png" // Asegúrate que esta imagen exista en public/
             alt="Ilustración de Login"
             className="h-15 w-auto mx-auto mb-6" // Ajustado tamaño y margen
           />
